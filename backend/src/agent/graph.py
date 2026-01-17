@@ -7,7 +7,6 @@ from langgraph.graph import StateGraph
 from langgraph.graph import START, END
 from langchain_core.runnables import RunnableConfig
 from langchain_groq import ChatGroq
-from tavily import TavilyClient
 
 from agent.state import (
     OverallState,
@@ -23,18 +22,12 @@ from agent.prompts import (
     reflection_instructions,
     answer_instructions,
 )
-from agent.utils import get_research_topic
+from agent.utils import get_research_topic, search_local_directory
 
 load_dotenv()
 
 if os.getenv("GROQ_API_KEY") is None:
     raise ValueError("GROQ_API_KEY is not set")
-
-if os.getenv("TAVILY_API_KEY") is None:
-    raise ValueError("TAVILY_API_KEY is not set")
-
-# Initialize Tavily client
-tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 
 def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerationState:
@@ -76,18 +69,18 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
     return {"search_query": result.query}
 
 
-def continue_to_web_research(state: QueryGenerationState):
+def continue_to_web_research(state: OverallState):
     """LangGraph node that sends the search queries to the web research node."""
     return [
-        Send("web_research", {"search_query": search_query, "id": int(idx)})
+        Send("web_research", {"search_query": search_query, "id": int(idx), "search_dir": state.get("search_dir", ".")})
         for idx, search_query in enumerate(state["search_query"])
     ]
 
 
 def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
-    """LangGraph node that performs web research using Tavily Search API.
+    """LangGraph node that performs local directory search.
 
-    Executes a web search using Tavily and summarizes results with Groq.
+    Searches the local directory for files matching the search query and summarizes results with Groq.
 
     Args:
         state: Current graph state containing the search query
@@ -98,12 +91,11 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
     """
     configurable = Configuration.from_runnable_config(config)
     
-    # Perform Tavily search
-    search_results = tavily_client.search(
+    # Perform local directory search
+    search_results = search_local_directory(
         query=state["search_query"],
-        search_depth="advanced",
+        directory=state.get("search_dir", "."),
         max_results=5,
-        include_raw_content=False,
     )
     
     # Extract and format results
@@ -117,9 +109,9 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
         }
         sources_gathered.append(source)
         
-        # Build context for LLM with markdown links - LLM will use these in its response
+        # Build context for LLM with file paths - LLM will use these in its response
         context_parts.append(
-            f"[{source['label']}]({source['value']})\n{result.get('content', '')}"
+            f"**{source['label']}** (from: {source['value']})\n{result.get('content', '')}"
         )
     
     context = "\n\n---\n\n".join(context_parts)
@@ -136,7 +128,7 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
         research_topic=state["search_query"],
     )
     
-    full_prompt = f"{formatted_prompt}\n\nSearch Results:\n{context}"
+    full_prompt = f"{formatted_prompt}\n\nLocal Search Results:\n{context}"
     response = llm.invoke(full_prompt)
     
     return {
@@ -187,7 +179,7 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
 
 
 def evaluate_research(
-    state: ReflectionState,
+    state: OverallState,
     config: RunnableConfig,
 ) -> OverallState:
     """LangGraph routing function that determines the next step."""
@@ -207,6 +199,7 @@ def evaluate_research(
                 {
                     "search_query": follow_up_query,
                     "id": state["number_of_ran_queries"] + int(idx),
+                    "search_dir": state.get("search_dir", "."),
                 },
             )
             for idx, follow_up_query in enumerate(state["follow_up_queries"])

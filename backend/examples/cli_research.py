@@ -24,6 +24,12 @@ def main() -> None:
         default="llama-3.3-70b-versatile",
         help="Model for the final answer",
     )
+    parser.add_argument(
+        "--dir",
+        type=str,
+        required=True,
+        help="Local directory to search for documents",
+    )
     args = parser.parse_args()
 
     state = {
@@ -31,6 +37,7 @@ def main() -> None:
         "initial_search_query_count": args.initial_queries,
         "max_research_loops": args.max_loops,
         "reasoning_model": args.reasoning_model,
+        "search_dir": args.dir,
     }
 
     result = graph.invoke(state)
